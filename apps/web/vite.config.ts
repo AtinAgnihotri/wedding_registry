@@ -13,7 +13,8 @@ const config = defineConfig(({ command }) => ({
   resolve: { tsconfigPaths: true },
   plugins: [
     devtools(),
-    command === 'build' && nitro({ rollupConfig: { external: [/^@sentry\//] } }),
+    command === 'build' &&
+      nitro({ rollupConfig: { external: [/^@sentry\//] } }),
     tailwindcss(),
     tanstackStart(),
     viteReact(),

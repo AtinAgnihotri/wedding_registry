@@ -209,8 +209,8 @@ function ownsReservation(
 
   return Boolean(
     caller.guestToken &&
-      reservation.releaseCode.startsWith(HASH_PREFIX) &&
-      reservation.releaseCode === hashReleaseCode(giftId, caller.guestToken),
+    reservation.releaseCode.startsWith(HASH_PREFIX) &&
+    reservation.releaseCode === hashReleaseCode(giftId, caller.guestToken),
   )
 }
 
@@ -334,7 +334,9 @@ async function readSnapshot({ fresh }: { fresh: boolean }) {
 }
 
 function findRow(snapshot: SheetSnapshot, id: string): SheetRow {
-  const row = snapshot.rows.find((candidate) => text(candidate.record.id) === id)
+  const row = snapshot.rows.find(
+    (candidate) => text(candidate.record.id) === id,
+  )
 
   if (!row) {
     throw new RegistryError('Gift not found.')
@@ -400,7 +402,10 @@ export async function listGiftsForCaller(caller: RegistryCaller) {
     .map((row) => toPublicGift(row.record, caller))
 }
 
-export async function addGiftRecord(input: AddGiftInput, caller: RegistryCaller) {
+export async function addGiftRecord(
+  input: AddGiftInput,
+  caller: RegistryCaller,
+) {
   const record = newGiftRecord(input)
 
   if (!text(record.name)) {
@@ -453,7 +458,11 @@ export async function reserveGiftRecord(
       throw new RegistryError('This name has already joined this gift.')
     }
 
-    if (reservations.some((reservation) => ownsReservation(id, reservation, caller))) {
+    if (
+      reservations.some((reservation) =>
+        ownsReservation(id, reservation, caller),
+      )
+    ) {
       throw new RegistryError('You have already joined this gift.')
     }
 

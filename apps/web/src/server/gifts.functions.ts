@@ -1,13 +1,15 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 
-import { getRegistryCaller } from './caller.server'
+import { getClientIp, getRegistryCaller } from './caller.server'
 import {
   addGiftRecord,
   listGiftsForCaller,
   releaseGiftRecord,
   reserveGiftRecord,
 } from './gifts.server'
+import { enforceRateLimit } from './rate-limit.server'
+import { verifyTurnstile } from './turnstile.server'
 
 const addGiftSchema = z.object({
   name: z.string().trim().min(1, 'Gift name is required.').max(120),
@@ -37,7 +39,7 @@ export const listGifts = createServerFn({ method: 'GET' }).handler(async () => {
   return listGiftsForCaller(caller)
 })
 
-/** "Suggest a gift". */
+/** "Suggest a gift". Requires `turnstileToken`; `website` is a honeypot. */
 export const addGift = createServerFn({ method: 'POST' })
   .validator(addGiftSchema)
   .handler(async ({ data }) => {
@@ -45,15 +47,24 @@ export const addGift = createServerFn({ method: 'POST' })
       // Honeypot tripped: pretend success without writing.
       return { ok: true as const, gift: null }
     }
+    const ip = getClientIp()
+    enforceRateLimit('add', ip)
+    await verifyTurnstile(data.turnstileToken, ip)
     const caller = await getRegistryCaller()
     const gift = await addGiftRecord(data, caller)
     return { ok: true as const, gift }
   })
 
-/** Join a gift (max 5 per gift). Sets an HttpOnly guest cookie used for release. */
+/**
+ * Join a gift (max 5 per gift). Sets an HttpOnly guest cookie used for release and
+ * attaches the signed-in user's id when a session exists. Requires `turnstileToken`.
+ */
 export const reserveGift = createServerFn({ method: 'POST' })
   .validator(reserveGiftSchema)
   .handler(async ({ data }) => {
+    const ip = getClientIp()
+    enforceRateLimit('reserve', ip)
+    await verifyTurnstile(data.turnstileToken, ip)
     const caller = await getRegistryCaller({ createGuestToken: true })
     const gift = await reserveGiftRecord(data, caller)
     return { ok: true as const, gift }
@@ -63,6 +74,7 @@ export const reserveGift = createServerFn({ method: 'POST' })
 export const releaseGift = createServerFn({ method: 'POST' })
   .validator(releaseGiftSchema)
   .handler(async ({ data }) => {
+    enforceRateLimit('release', getClientIp())
     const caller = await getRegistryCaller({ adminKey: data.adminKey })
     const gift = await releaseGiftRecord(data.id, caller)
     return { ok: true as const, gift }
