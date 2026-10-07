@@ -1,153 +1,92 @@
-import { useState } from 'react'
-import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 
-import { Button } from '#/components/ui/button'
-import { Input } from '#/components/ui/input'
-import { Turnstile } from '#/components/turnstile'
-import { authClient, turnstileHeaders } from '#/lib/auth-client'
-import { claimMyReservations, getSession } from '#/server/session.functions'
+import { AuthFlow, useCompleteSocialLogin } from '#/components/auth/auth-flow'
+import { kicker } from '#/components/registry/styles'
+import { cn } from '#/lib/utils'
+import { getSession } from '#/server/session.functions'
 
 export const Route = createFileRoute('/auth')({
   loader: () => getSession(),
   component: AuthPage,
 })
 
-/** Bare login shell. Cursor owns the real auth sheet; this only proves the wiring. */
+const backLink =
+  'inline-flex min-h-11 items-center px-2 font-bold text-berry underline-offset-4 hover:underline'
+
+/** Fallback sign-in page; the registry normally opens the same flow in a sheet. */
 function AuthPage() {
-  const { user, authEnabled, socialProviders } = Route.useLoaderData()
-  const router = useRouter()
-  const [phone, setPhone] = useState('')
-  const [code, setCode] = useState('')
-  const [sent, setSent] = useState(false)
-  const [status, setStatus] = useState('')
-  const [turnstileToken, setTurnstileToken] = useState<string>()
-  const [turnstileReset, setTurnstileReset] = useState(0)
+  const session = Route.useLoaderData()
+  const { user, authEnabled } = session
 
-  const fullPhone = `+91${phone.replace(/\D/g, '').slice(-10)}`
-
-  async function afterLogin() {
-    await claimMyReservations()
-    await router.invalidate()
-  }
-
-  if (!authEnabled) {
-    return (
-      <main className="space-y-4 p-6">
-        <p>
-          Login is not configured (DATABASE_URL / BETTER_AUTH_SECRET missing).
-          Guests can still reserve.
-        </p>
-        <Link to="/" className="underline">
-          Back to registry
-        </Link>
-      </main>
-    )
-  }
-
-  if (user) {
-    return (
-      <main className="space-y-4 p-6">
-        <p data-testid="signed-in">
-          Signed in as {user.name} {user.phoneNumber ?? user.email ?? ''}
-        </p>
-        <Button
-          onClick={async () => {
-            await authClient.signOut()
-            await router.invalidate()
-          }}
-        >
-          Sign out
-        </Button>
-        <Link to="/" className="block underline">
-          Back to registry
-        </Link>
-      </main>
-    )
-  }
+  useCompleteSocialLogin(Boolean(user))
 
   return (
-    <main className="mx-auto max-w-md space-y-4 p-6">
-      <h1 className="text-xl font-bold">Log in (optional)</h1>
-      {status ? <p role="status">{status}</p> : null}
+    <main className="mx-auto grid min-h-dvh w-[min(980px,calc(100%-22px))] items-center py-6 sm:w-[min(980px,calc(100%-32px))] sm:py-10">
+      <div className="grid overflow-hidden rounded-lg border border-gold/35 bg-surface shadow-deep md:grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)]">
+        <div className="wr-hero relative isolate flex min-h-[220px] flex-col justify-end p-6 sm:p-8 md:min-h-[520px]">
+          <div className="wr-hero-text relative z-10">
+            <p className="mb-2 text-[0.76rem] font-extrabold tracking-[0.14em] text-champagne uppercase">
+              Wedding Gift Registry
+            </p>
+            <p
+              aria-label="Mitthu and Atin"
+              className="font-display text-[3rem] leading-[0.9] font-medium text-surface sm:text-[3.6rem]"
+            >
+              Mitthu{' '}
+              <span aria-hidden="true" className="text-champagne italic">
+                &amp;
+              </span>{' '}
+              Atin
+            </p>
+            <p className="mt-3 text-sm font-semibold text-surface/85">
+              12 December 2026 · Sunahari Bagh Farm, Gurgaon
+            </p>
+          </div>
+        </div>
 
-      {!sent ? (
-        <form
-          className="space-y-2"
-          onSubmit={async (event) => {
-            event.preventDefault()
-            setStatus('')
-            const { error } = await authClient.phoneNumber.sendOtp(
-              { phoneNumber: fullPhone },
-              { headers: turnstileHeaders(turnstileToken) },
-            )
-            setTurnstileReset((n) => n + 1)
-            if (error) setStatus(error.message ?? 'Could not send code.')
-            else setSent(true)
-          }}
-        >
-          <label className="flex items-center gap-2">
-            <span>+91</span>
-            <Input
-              name="phone"
-              inputMode="numeric"
-              placeholder="10-digit mobile number"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              required
-            />
-          </label>
-          <Turnstile
-            action="otp"
-            resetKey={turnstileReset}
-            onToken={setTurnstileToken}
-          />
-          <Button type="submit">Send code</Button>
-        </form>
-      ) : (
-        <form
-          className="space-y-2"
-          onSubmit={async (event) => {
-            event.preventDefault()
-            setStatus('')
-            const { error } = await authClient.phoneNumber.verify({
-              phoneNumber: fullPhone,
-              code,
-            })
-            if (error) setStatus(error.message ?? 'Invalid code.')
-            else await afterLogin()
-          }}
-        >
-          <p>Code sent to {fullPhone}.</p>
-          <Input
-            name="code"
-            inputMode="numeric"
-            placeholder="6-digit code"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            required
-          />
-          <Button type="submit">Verify</Button>
-          <Button type="button" variant="ghost" onClick={() => setSent(false)}>
-            Change number
-          </Button>
-        </form>
-      )}
-
-      {socialProviders.map((provider) => (
-        <Button
-          key={provider}
-          variant="outline"
-          className="block"
-          onClick={() =>
-            authClient.signIn.social({ provider, callbackURL: '/auth' })
-          }
-        >
-          Continue with {provider === 'google' ? 'Google' : 'Facebook'}
-        </Button>
-      ))}
-      <Link to="/" className="block underline">
-        Skip — continue as guest
-      </Link>
+        <div className="p-6 sm:p-9">
+          {!authEnabled ? (
+            <div className="grid gap-4">
+              <p className={kicker}>Sign in</p>
+              <h1 className="font-display text-[2rem] leading-[1.05] font-medium text-ink">
+                Login isn&apos;t available right now
+              </h1>
+              <p className="leading-relaxed text-ink-muted">
+                You don&apos;t need an account. Guests can still browse,
+                reserve, and suggest gifts.
+              </p>
+              <Link to="/" className={backLink}>
+                Back to registry
+              </Link>
+            </div>
+          ) : (
+            <>
+              <div className="mb-6">
+                <p className={cn(kicker, 'mb-2.5')}>
+                  {user ? 'Your account' : 'Optional'}
+                </p>
+                <h1 className="font-display text-[2rem] leading-[1.05] font-medium text-ink">
+                  {user ? 'Welcome back' : 'Sign in to keep your gifts'}
+                </h1>
+                <p className="mt-3 text-[0.95rem] leading-relaxed text-ink-muted">
+                  {user
+                    ? 'You can keep browsing and reserving as usual.'
+                    : 'Signing in lets you release your gifts from any device. You can always reserve as a guest.'}
+                </p>
+              </div>
+              <AuthFlow
+                session={session}
+                callbackURL="/auth"
+                guestAction={
+                  <Link to="/" className={backLink}>
+                    {user ? 'Back to registry' : 'Skip — continue as guest'}
+                  </Link>
+                }
+              />
+            </>
+          )}
+        </div>
+      </div>
     </main>
   )
 }
