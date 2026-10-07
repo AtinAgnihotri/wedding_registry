@@ -113,7 +113,9 @@ async function loadServiceAccount(): Promise<ServiceAccountCredentials> {
   const parsed = JSON.parse(raw) as Partial<ServiceAccountCredentials>
 
   if (!parsed.client_email || !parsed.private_key) {
-    throw new Error('Service account JSON is missing client_email or private_key.')
+    throw new Error(
+      'Service account JSON is missing client_email or private_key.',
+    )
   }
 
   return {

@@ -1,217 +1,90 @@
-Welcome to your new TanStack Start app!
+# Wedding registry — TanStack Start app (`apps/web`)
 
-# Getting Started
-
-To run this application:
+Backend track of the migration (PRP-001 + PRP-002). The UI here is a deliberately ugly
+functional stub; the brand-faithful port is PRP-003 (Cursor). The legacy static site at the
+repo root stays live until PRP-004.
 
 ```bash
+cd apps/web
 pnpm install
-pnpm dev
+cp .env.example .env   # fill in what you have; see below
+pnpm dev               # http://localhost:3000
+pnpm test && pnpm typecheck && pnpm lint && pnpm build
 ```
 
-# Building For Production
+No credentials? `GIFTS_BACKEND=memory pnpm dev` runs the full registry in memory (seeded with the
+legacy default gifts). Login is hidden until `DATABASE_URL` + `BETTER_AUTH_SECRET` are set, and
+Turnstile is skipped locally until `TURNSTILE_SECRET_KEY` is set.
 
-To build this application for production:
+## Setup
 
-```bash
-pnpm build
-```
+### Google Sheet (service account)
 
-## Styling
+1. Google Cloud console → create a project → enable **Google Sheets API**.
+2. IAM → Service accounts → create one → Keys → add JSON key.
+3. Open the registry Sheet → **Share** → add the key's `client_email` as **Editor**.
+4. Set `GOOGLE_SHEETS_SPREADSHEET_ID` (from the Sheet URL) and `GOOGLE_SERVICE_ACCOUNT_JSON`
+   (single-line JSON or base64 of the file). The existing `Gifts` tab and headers
+   (`id,name,category,price,description,link,reservedBy,message,releaseCode,reservations,createdAt,updatedAt`)
+   are reused as-is; missing headers are appended, an empty tab is seeded with the default gifts.
 
-This project uses [Tailwind CSS](https://tailwindcss.com/) for styling.
+### Neon (auth database)
 
-### Removing Tailwind CSS
+1. Create a Neon project; copy the **pooled** connection string into `DATABASE_URL`.
+2. `openssl rand -base64 32` → `BETTER_AUTH_SECRET`; set `BETTER_AUTH_URL` to the public origin.
+3. `pnpm db:migrate` applies `drizzle/` (Better Auth tables incl. `rate_limit`).
+   After changing auth plugins: `pnpm auth:generate && pnpm db:generate`.
 
-If you prefer not to use Tailwind CSS:
+### MSG91 (phone OTP, +91)
 
-1. Remove the demo pages in `src/routes/demo/`
-2. Replace the Tailwind import in `src/styles.css` with your own styles
-3. Remove `tailwindcss()` from the plugins array in `vite.config.ts`
-4. Remove `@tailwindcss/vite` and `tailwindcss` from `package.json`
+1. Create an OTP template with the `##OTP##` variable and get it DLT-approved.
+2. Set `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID`. Better Auth generates/verifies the 6-digit code
+   (5 min expiry, 3 attempts); MSG91 only delivers it via `POST /api/v5/otp`.
 
-## Linting & Formatting
+### Cloudflare Turnstile
 
+Create a widget for your domain(s) → `VITE_TURNSTILE_SITE_KEY` (public) + `TURNSTILE_SECRET_KEY`.
 
-This project uses [eslint](https://eslint.org/) and [prettier](https://prettier.io/) for linting and formatting. Eslint is configured using [tanstack/eslint-config](https://tanstack.com/config/latest/docs/eslint). The following scripts are available:
+### OAuth redirect URLs
 
-```bash
-pnpm lint
-pnpm format
-pnpm check
-```
+| Provider | Where                                                                       | Value                                           |
+| -------- | --------------------------------------------------------------------------- | ----------------------------------------------- |
+| Google   | Cloud console → Credentials → OAuth client (Web) → Authorized redirect URIs | `${BETTER_AUTH_URL}/api/auth/callback/google`   |
+| Facebook | Meta app → Facebook Login → Settings → Valid OAuth Redirect URIs            | `${BETTER_AUTH_URL}/api/auth/callback/facebook` |
 
+Add both `http://localhost:3000/...` (dev) and the staging/prod origin. Instagram is out of scope.
 
-## Shadcn
+## Security model
 
-Add components using the latest version of [Shadcn](https://ui.shadcn.com/).
+- All secrets are server-only (`*.server.ts`, server functions); only `VITE_TURNSTILE_SITE_KEY` reaches the browser.
+- Non-GET server functions require same-origin requests (`src/start.ts`, TanStack CSRF middleware); Better Auth checks `trustedOrigins`.
+- Release ownership: an HttpOnly `__Host-wr_guest` cookie (`wr_guest` on http://localhost); the Sheet only stores `sha256(giftId:token)`. Signed-in reservations also store `userId`. Nothing in `localStorage`.
+- Turnstile on `reserveGift`, `addGift` (server-verified) and `/api/auth/phone-number/send-otp` (Better Auth captcha plugin). Fails closed in production if the secret is missing.
+- Rate limits: OTP send 3/min/IP + 3 per 10 min per phone; OTP verify 10/min/IP (Better Auth, stored in Postgres). Gift mutations: reserve 10/min, add 5/min, release 20/min per IP (in-process). Set `TRUSTED_IP_HEADER` to your host's unspoofable client-IP header.
+- Sheet writes are serialized in-process with a pre-write re-read and one retry on conflict; the list is cached 60s and invalidated on writes.
 
-```bash
-pnpm dlx shadcn@latest add button
-```
+## Handoff for Cursor (PRP-003)
 
+**UI port can start on these server functions** (`src/server/gifts.functions.ts`, types in `src/lib/gifts.ts`):
 
-## Deploy with Nitro
+| Function      | Input (`{ data }`)                                                           | Returns                                                   |
+| ------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `listGifts()` | —                                                                            | `Gift[]` (per-caller `canRelease`, `reservations[].mine`) |
+| `addGift`     | `{ name, category?, price?, description?, link?, turnstileToken, website? }` | `{ ok, gift }`                                            |
+| `reserveGift` | `{ id, guestName, message?, turnstileToken }`                                | `{ ok, gift }`                                            |
+| `releaseGift` | `{ id, adminKey? }`                                                          | `{ ok, gift }`                                            |
 
-This project uses Nitro as a generic server adapter, so it can run on any Node-compatible host.
+Errors are thrown as `Error` with guest-safe messages (show `error.message`). Use `formatINR`,
+`isGiftFull`, `MAX_RESERVATIONS_PER_GIFT` from `#/lib/gifts`. `website` is a honeypot — keep the
+field hidden and empty.
 
-```bash
-npm run build
-node dist/server/index.mjs
-```
+**Auth sheet can start on these hooks:**
 
-The build output is a self-contained Node server. To deploy, push the `dist/` directory to your host (Render, Fly.io, your own VPS, etc.) and run the server command above.
+- Session (SSR/loader): `getSession()` from `#/server/session.functions` → `{ user: { id, name, email, phoneNumber } | null, authEnabled, socialProviders: ('google'|'facebook')[] }`. Prefill the reserve form with `user.name`.
+- Session (client): `authClient.useSession()` from `#/lib/auth-client`.
+- Phone OTP: `authClient.phoneNumber.sendOtp({ phoneNumber: '+91XXXXXXXXXX' }, { headers: turnstileHeaders(token) })` then `authClient.phoneNumber.verify({ phoneNumber, code })` (signs up on first verify).
+- Social: `authClient.signIn.social({ provider, callbackURL })`. Sign out: `authClient.signOut()`.
+- After any login call `claimMyReservations()` so earlier guest reservations move to the account.
+- **Turnstile token**: render `<Turnstile onToken={setToken} resetKey={n} action="..." />` from `#/components/turnstile` and pass the token as `turnstileToken` in `reserveGift`/`addGift` data, or via `turnstileHeaders(token)` (`x-captcha-response`) for OTP send. Tokens are single-use: bump `resetKey` after each submit.
 
-For host-specific presets (Vercel, Netlify, Cloudflare, AWS Lambda, etc.) and tuning, see https://v3.nitro.build/deploy.
-
-
-
-## Routing
-
-This project uses [TanStack Router](https://tanstack.com/router) with file-based routing. Routes are managed as files in `src/routes`.
-
-### Adding A Route
-
-To add a new route to your application just add a new file in the `./src/routes` directory.
-
-TanStack will automatically generate the content of the route file for you.
-
-Now that you have two routes you can use a `Link` component to navigate between them.
-
-### Adding Links
-
-To use SPA (Single Page Application) navigation you will need to import the `Link` component from `@tanstack/react-router`.
-
-```tsx
-import { Link } from "@tanstack/react-router";
-```
-
-Then anywhere in your JSX you can use it like so:
-
-```tsx
-<Link to="/about">About</Link>
-```
-
-This will create a link that will navigate to the `/about` route.
-
-More information on the `Link` component can be found in the [Link documentation](https://tanstack.com/router/v1/docs/framework/react/api/router/linkComponent).
-
-### Using A Layout
-
-In the File Based Routing setup the layout is located in `src/routes/__root.tsx`. Anything you add to the root route will appear in all the routes. The route content will appear in the JSX where you render `{children}` in the `shellComponent`.
-
-Here is an example layout that includes a header:
-
-```tsx
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
-
-export const Route = createRootRoute({
-  head: () => ({
-    meta: [
-      { charSet: 'utf-8' },
-      { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-      { title: 'My App' },
-    ],
-  }),
-  shellComponent: ({ children }) => (
-    <html lang="en">
-      <head>
-        <HeadContent />
-      </head>
-      <body>
-        <header>
-          <nav>
-            <Link to="/">Home</Link>
-            <Link to="/about">About</Link>
-          </nav>
-        </header>
-        {children}
-        <Scripts />
-      </body>
-    </html>
-  ),
-})
-```
-
-More information on layouts can be found in the [Layouts documentation](https://tanstack.com/router/latest/docs/framework/react/guide/routing-concepts#layouts).
-
-## Server Functions
-
-TanStack Start provides server functions that allow you to write server-side code that seamlessly integrates with your client components.
-
-```tsx
-import { createServerFn } from '@tanstack/react-start'
-
-const getServerTime = createServerFn({
-  method: 'GET',
-}).handler(async () => {
-  return new Date().toISOString()
-})
-
-// Use in a component
-function MyComponent() {
-  const [time, setTime] = useState('')
-  
-  useEffect(() => {
-    getServerTime().then(setTime)
-  }, [])
-  
-  return <div>Server time: {time}</div>
-}
-```
-
-## API Routes
-
-You can create API routes by using the `server` property in your route definitions:
-
-```tsx
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
-
-export const Route = createFileRoute('/api/hello')({
-  server: {
-    handlers: {
-      GET: () => json({ message: 'Hello, World!' }),
-    },
-  },
-})
-```
-
-## Data Fetching
-
-There are multiple ways to fetch data in your application. You can use TanStack Query to fetch data from a server. But you can also use the `loader` functionality built into TanStack Router to load the data for a route before it's rendered.
-
-For example:
-
-```tsx
-import { createFileRoute } from '@tanstack/react-router'
-
-export const Route = createFileRoute('/people')({
-  loader: async () => {
-    const response = await fetch('https://swapi.dev/api/people')
-    return response.json()
-  },
-  component: PeopleComponent,
-})
-
-function PeopleComponent() {
-  const data = Route.useLoaderData()
-  return (
-    <ul>
-      {data.results.map((person) => (
-        <li key={person.name}>{person.name}</li>
-      ))}
-    </ul>
-  )
-}
-```
-
-Loaders simplify your data fetching logic dramatically. Check out more information in the [Loader documentation](https://tanstack.com/router/latest/docs/framework/react/guide/data-loading#loader-parameters).
-
-
-
-# Learn More
-
-You can learn more about all of the offerings from TanStack in the [TanStack documentation](https://tanstack.com).
-
-For TanStack Start specific documentation, visit [TanStack Start](https://tanstack.com/start).
+Reference implementations: `src/routes/index.tsx` (registry stub) and `src/routes/auth.tsx` (bare login).

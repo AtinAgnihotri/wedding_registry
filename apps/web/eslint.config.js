@@ -15,6 +15,14 @@ export default [
     },
   },
   {
-    ignores: ['eslint.config.js', 'prettier.config.js', 'src/components/ui/**', 'src/routeTree.gen.ts'],
+    ignores: [
+      'eslint.config.js',
+      'prettier.config.js',
+      'src/components/ui/**',
+      'src/routeTree.gen.ts',
+      '.output/**',
+      'drizzle/**',
+      'scripts/**',
+    ],
   },
 ]

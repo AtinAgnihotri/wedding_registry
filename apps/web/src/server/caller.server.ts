@@ -1,7 +1,15 @@
 import '@tanstack/react-start/server-only'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { getCookie, getRequestUrl, setCookie } from '@tanstack/react-start/server'
+import {
+  getCookie,
+  getRequestHeader,
+  getRequestIP,
+  getRequestUrl,
+  setCookie,
+} from '@tanstack/react-start/server'
 
+import { clientIpFromHeader, trustedIpHeader } from './client-ip'
+import { getSessionUser } from './session.server'
 import type { RegistryCaller } from './gifts.server'
 
 const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365
@@ -62,8 +70,19 @@ export function isAdminKey(candidate: string | undefined) {
 export async function getRegistryCaller(
   opts: { createGuestToken?: boolean; adminKey?: string } = {},
 ): Promise<RegistryCaller> {
+  const user = await getSessionUser()
   return {
     guestToken: opts.createGuestToken ? ensureGuestToken() : readGuestToken(),
+    userId: user?.id,
     isAdmin: isAdminKey(opts.adminKey),
   }
+}
+
+/** Client IP for rate limiting, read from the platform's trusted header (see TRUSTED_IP_HEADER). */
+export function getClientIp() {
+  return (
+    clientIpFromHeader(getRequestHeader(trustedIpHeader())) ||
+    getRequestIP() ||
+    'unknown'
+  )
 }
