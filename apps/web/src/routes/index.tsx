@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { useMemo, useState } from 'react'
+import { createFileRoute } from '@tanstack/react-router'
 import {
   queryOptions,
   useMutation,
@@ -7,12 +7,20 @@ import {
   useSuspenseQuery,
 } from '@tanstack/react-query'
 
-import { Button } from '#/components/ui/button'
-import { Input } from '#/components/ui/input'
-import { Textarea } from '#/components/ui/textarea'
-import { Turnstile } from '#/components/turnstile'
-import { formatINR, isGiftFull, MAX_RESERVATIONS_PER_GIFT } from '#/lib/gifts'
+import { AuthSheet } from '#/components/auth/auth-sheet'
+import { useCompleteSocialLogin } from '#/components/auth/auth-flow'
+import { GiftCard } from '#/components/registry/gift-card'
+import { Intro } from '#/components/registry/intro'
+import type { SyncState } from '#/components/registry/intro'
+import { RegistryToolbar } from '#/components/registry/registry-toolbar'
+import { ReserveDialog } from '#/components/registry/reserve-dialog'
+import { kicker } from '#/components/registry/styles'
+import { SuggestForm } from '#/components/registry/suggest-form'
+import { SummaryTiles } from '#/components/registry/summary-tiles'
+import type { StatusFilter } from '#/components/registry/summary-tiles'
+import { DEFAULT_CATEGORIES, isGiftFull } from '#/lib/gifts'
 import type { Gift } from '#/lib/gifts'
+import { cn } from '#/lib/utils'
 import {
   addGift,
   listGifts,
@@ -20,8 +28,6 @@ import {
   reserveGift,
 } from '#/server/gifts.functions'
 import { getSession } from '#/server/session.functions'
-
-// Functional stub only. Visual design is owned by PRP-003 (Cursor).
 
 const giftsQuery = queryOptions({
   queryKey: ['gifts'],
@@ -40,26 +46,39 @@ export const Route = createFileRoute('/')({
       context.queryClient.ensureQueryData(giftsQuery),
       context.queryClient.ensureQueryData(sessionQuery),
     ]),
-  component: RegistryStub,
+  component: Registry,
 })
 
 function errorMessage(error: unknown) {
+  if (!error) return ''
   return error instanceof Error ? error.message : String(error)
 }
 
-function RegistryStub() {
-  const queryClient = useQueryClient()
-  const { data: gifts } = useSuspenseQuery(giftsQuery)
-  const { data: session } = useSuspenseQuery(sessionQuery)
-  const [error, setError] = useState('')
-  const [turnstileToken, setTurnstileToken] = useState<string>()
-  const [turnstileReset, setTurnstileReset] = useState(0)
+const SAVE_FAILED = 'Save failed. Your change was not kept; please try again.'
 
-  // Turnstile tokens are single-use: hand the current one to a mutation, then re-arm.
-  const consumeTurnstileToken = () => {
-    setTurnstileReset((n) => n + 1)
-    return turnstileToken
-  }
+function matchesStatus(gift: Gift, status: StatusFilter) {
+  if (status === 'available') return !isGiftFull(gift)
+  if (status === 'reserved') return gift.reservations.length > 0
+  return true
+}
+
+function Registry() {
+  const queryClient = useQueryClient()
+  const { data: gifts, isFetching } = useSuspenseQuery(giftsQuery)
+  const { data: session } = useSuspenseQuery(sessionQuery)
+
+  const [status, setStatus] = useState<StatusFilter>('available')
+  const [category, setCategory] = useState('All')
+  const [search, setSearch] = useState('')
+  const [reserveId, setReserveId] = useState<string>()
+  const [reserveOpen, setReserveOpen] = useState(false)
+  const [authOpen, setAuthOpen] = useState(false)
+  const [lastSync, setLastSync] = useState<{
+    state: SyncState
+    message: string
+  }>({ state: 'idle', message: 'Shared registry connected' })
+
+  useCompleteSocialLogin(Boolean(session.user))
 
   const setGift = (gift: Gift | null) => {
     if (!gift) return
@@ -70,173 +89,202 @@ function RegistryStub() {
     )
   }
 
-  const onError = (err: unknown) => setError(errorMessage(err))
+  const onSaved = (result: { gift: Gift | null }) => {
+    setGift(result.gift)
+    setLastSync({ state: 'saved', message: 'Shared registry updated' })
+  }
+  const onError = () => setLastSync({ state: 'error', message: SAVE_FAILED })
 
   const reserve = useMutation({
     mutationFn: (data: Parameters<typeof reserveGift>[0]['data']) =>
       reserveGift({ data }),
-    onSuccess: (result) => setGift(result.gift),
+    onSuccess: (result) => {
+      onSaved(result)
+      setReserveOpen(false)
+    },
     onError,
   })
   const release = useMutation({
     mutationFn: (data: Parameters<typeof releaseGift>[0]['data']) =>
       releaseGift({ data }),
-    onSuccess: (result) => setGift(result.gift),
+    onSuccess: onSaved,
     onError,
   })
   const add = useMutation({
     mutationFn: (data: Parameters<typeof addGift>[0]['data']) =>
       addGift({ data }),
-    onSuccess: (result) => setGift(result.gift),
+    onSuccess: onSaved,
     onError,
   })
 
+  const saving = reserve.isPending || release.isPending || add.isPending
+  const sync = saving
+    ? { state: 'saving' as const, message: 'Saving to shared registry...' }
+    : isFetching
+      ? {
+          state: 'refreshing' as const,
+          message: 'Refreshing shared registry...',
+        }
+      : lastSync
+
+  const refresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['gifts'] })
+    setLastSync(
+      queryClient.getQueryState(['gifts'])?.status === 'error'
+        ? {
+            state: 'error',
+            message:
+              'Showing saved copy. Shared registry refresh is slow or unavailable.',
+          }
+        : { state: 'idle', message: 'Shared registry connected' },
+    )
+  }
+
+  const categories = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          'All',
+          ...DEFAULT_CATEGORIES,
+          ...gifts.map((gift) => gift.category).filter(Boolean),
+        ]),
+      ),
+    [gifts],
+  )
+  const activeCategory = categories.includes(category) ? category : 'All'
+
+  const counts = {
+    available: gifts.filter((gift) => !isGiftFull(gift)).length,
+    reserved: gifts.filter((gift) => gift.reservations.length > 0).length,
+    all: gifts.length,
+  }
+
+  const query = search.trim().toLowerCase()
+  const visibleGifts = gifts.filter(
+    (gift) =>
+      (activeCategory === 'All' || gift.category === activeCategory) &&
+      matchesStatus(gift, status) &&
+      `${gift.name} ${gift.category} ${gift.description}`
+        .toLowerCase()
+        .includes(query),
+  )
+
+  const reserveGiftTarget = gifts.find((gift) => gift.id === reserveId)
+
+  const accountLabel = session.authEnabled
+    ? session.user
+      ? session.user.name || 'Account'
+      : 'Sign in (optional)'
+    : null
+
   return (
-    <main className="mx-auto max-w-3xl space-y-6 p-6">
-      <h1 className="text-2xl font-bold">Wedding registry (backend stub)</h1>
-      <Button
-        variant="outline"
-        onClick={() => queryClient.invalidateQueries({ queryKey: ['gifts'] })}
-      >
-        Refresh
-      </Button>
-      <p className="text-sm" data-testid="session">
-        {session.user ? (
-          <>Signed in as {session.user.name}. </>
-        ) : (
-          <>Browsing as guest. </>
-        )}
-        {session.authEnabled ? (
-          <Link to="/auth" className="underline">
-            {session.user ? 'Account' : 'Log in (optional)'}
-          </Link>
-        ) : null}
-      </p>
-      <Turnstile
-        action="registry"
-        resetKey={turnstileReset}
-        onToken={setTurnstileToken}
+    <main className="mx-auto w-[min(1160px,calc(100%-22px))] pt-4 pb-14 sm:w-[min(1160px,calc(100%-32px))] sm:pt-9">
+      <Intro
+        sync={sync}
+        isRefreshing={isFetching}
+        onRefresh={() => void refresh()}
+        accountLabel={accountLabel}
+        onAccount={() => setAuthOpen(true)}
       />
-      {error ? (
-        <p role="alert" className="text-red-600">
-          {error}
-        </p>
-      ) : null}
 
-      <ul className="space-y-4" data-testid="gift-list">
-        {gifts.map((gift) => (
-          <li
-            key={gift.id}
-            className="rounded border p-3"
-            data-gift-id={gift.id}
-          >
-            <div className="font-semibold">
-              {gift.name} — {formatINR(gift.price)} ({gift.category})
-            </div>
-            <div className="text-sm">{gift.description}</div>
-            {gift.link ? (
-              <a
-                className="text-sm underline"
-                href={gift.link}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {gift.link}
-              </a>
-            ) : null}
-            <div className="text-sm">
-              {gift.reservations.length}/{MAX_RESERVATIONS_PER_GIFT} reserved
-              {gift.reservedBy ? `: ${gift.reservedBy}` : ''}
-            </div>
-            <form
-              className="mt-2 flex flex-wrap gap-2"
-              onSubmit={(event) => {
-                event.preventDefault()
-                setError('')
-                const form = new FormData(event.currentTarget)
-                reserve.mutate({
-                  id: gift.id,
-                  guestName: String(form.get('guestName') ?? ''),
-                  message: String(form.get('message') ?? ''),
-                  turnstileToken: consumeTurnstileToken(),
-                })
-              }}
+      <SummaryTiles counts={counts} value={status} onChange={setStatus} />
+
+      <RegistryToolbar
+        search={search}
+        onSearch={setSearch}
+        categories={categories}
+        category={activeCategory}
+        onCategory={setCategory}
+      />
+
+      <div className="grid items-start gap-7 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <section aria-labelledby="registry-heading" className="min-w-0">
+          <div className="mb-[18px]">
+            <p className={cn(kicker, 'mb-2.5')}>Registry</p>
+            <h2
+              id="registry-heading"
+              className="font-display text-[2.25rem] leading-none font-medium text-ink sm:text-[3rem]"
             >
-              <Input
-                name="guestName"
-                placeholder="Your name"
-                className="w-40"
-                defaultValue={session.user?.name ?? ''}
-                required
-              />
-              <Input
-                name="message"
-                placeholder="Message (optional)"
-                className="w-56"
-              />
-              <Button
-                type="submit"
-                disabled={isGiftFull(gift) || reserve.isPending}
-              >
-                {gift.reservations.length ? 'Join gift' : 'Reserve'}
-              </Button>
-              {gift.canRelease ? (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={release.isPending}
-                  onClick={() => {
-                    setError('')
-                    release.mutate({ id: gift.id })
-                  }}
-                >
-                  Release mine
-                </Button>
-              ) : null}
-            </form>
-          </li>
-        ))}
-      </ul>
+              Choose a Gift
+            </h2>
+          </div>
 
-      <form
-        className="space-y-2 rounded border p-3"
-        onSubmit={(event) => {
-          event.preventDefault()
-          setError('')
-          const formElement = event.currentTarget
-          const form = new FormData(formElement)
-          add.mutate(
-            {
-              name: String(form.get('name') ?? ''),
-              category: String(form.get('category') ?? ''),
-              price: Number(form.get('price') || 0),
-              link: String(form.get('link') ?? ''),
-              description: String(form.get('description') ?? ''),
-              website: String(form.get('website') ?? ''),
-              turnstileToken: consumeTurnstileToken(),
-            },
-            { onSuccess: () => formElement.reset() },
-          )
-        }}
-      >
-        <h2 className="font-semibold">Suggest a gift</h2>
-        <Input name="name" placeholder="Gift name" required />
-        <Input name="category" placeholder="Category (Home, Kitchen, ...)" />
-        <Input name="price" type="number" min={0} placeholder="Price (INR)" />
-        <Input name="link" placeholder="Store link" />
-        <Textarea name="description" placeholder="Description" />
-        {/* Honeypot: hidden from humans, bots tend to fill it. */}
-        <input
-          name="website"
-          tabIndex={-1}
-          autoComplete="off"
-          aria-hidden="true"
-          className="hidden"
+          {release.error ? (
+            <p
+              role="alert"
+              className="mb-4 rounded-md border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm font-semibold text-destructive"
+            >
+              {errorMessage(release.error)}
+            </p>
+          ) : null}
+
+          <div
+            key={`${status}:${activeCategory}`}
+            data-testid="gift-list"
+            className="grid gap-4 sm:grid-cols-2"
+          >
+            {visibleGifts.map((gift, index) => (
+              <GiftCard
+                key={gift.id}
+                gift={gift}
+                index={index}
+                releasing={
+                  release.isPending && release.variables.id === gift.id
+                }
+                onReserve={(target) => {
+                  reserve.reset()
+                  setReserveId(target.id)
+                  setReserveOpen(true)
+                }}
+                onRelease={(target) => {
+                  release.reset()
+                  release.mutate({ id: target.id })
+                }}
+              />
+            ))}
+          </div>
+          {visibleGifts.length === 0 ? (
+            <p className="mt-7 rounded-lg border border-dashed border-line bg-surface/70 p-7 text-ink-muted">
+              No gifts match that search yet.
+            </p>
+          ) : null}
+        </section>
+
+        <SuggestForm
+          categories={categories.filter((name) => name !== 'All')}
+          pending={add.isPending}
+          error={errorMessage(add.error)}
+          onSubmit={(data, reset) => {
+            add.reset()
+            add.mutate(data, {
+              onSuccess: (result) => {
+                reset()
+                setCategory(result.gift?.category || 'All')
+                setStatus('all')
+                setSearch('')
+              },
+            })
+          }}
         />
-        <Button type="submit" disabled={add.isPending}>
-          Add gift
-        </Button>
-      </form>
+      </div>
+
+      <ReserveDialog
+        open={reserveOpen}
+        gift={reserveGiftTarget}
+        defaultName={session.user?.name ?? ''}
+        pending={reserve.isPending}
+        error={errorMessage(reserve.error)}
+        onClose={() => setReserveOpen(false)}
+        onSubmit={(data) => reserve.mutate(data)}
+      />
+
+      {session.authEnabled ? (
+        <AuthSheet
+          open={authOpen}
+          onOpenChange={setAuthOpen}
+          session={session}
+        />
+      ) : null}
     </main>
   )
 }
