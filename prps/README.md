@@ -20,6 +20,7 @@ Multiple tools will execute different slices. Read the parent PRP first, then on
 | [002-devin-auth-and-bot-protection.md](./002-devin-auth-and-bot-protection.md) | Devin | Ready after 001 |
 | [003-cursor-ui-port.md](./003-cursor-ui-port.md) | Cursor | Ready after 001 stubs |
 | [004-devin-cutover.md](./004-devin-cutover.md) | Devin | Ready after 002 + 003 |
+| [005-design-doc-post-migration.md](./005-design-doc-post-migration.md) | Shared — end-state vision, why migrate, free deploy options | Spec |
 
 ## Rules for all agents
 
