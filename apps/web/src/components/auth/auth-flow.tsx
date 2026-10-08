@@ -114,9 +114,9 @@ export function AuthFlow({
         <div className="rounded-lg border border-gold/30 bg-champagne/35 p-4">
           <p className="text-sm font-semibold text-ink-muted">Signed in as</p>
           <p className="mt-1 font-display text-2xl leading-tight text-ink">
-            {user.name}
+            {user.name || user.phoneNumber || user.email}
           </p>
-          {user.phoneNumber || user.email ? (
+          {user.name && (user.phoneNumber || user.email) ? (
             <p className="mt-1 text-sm text-ink-muted">
               {user.phoneNumber ?? user.email}
             </p>
